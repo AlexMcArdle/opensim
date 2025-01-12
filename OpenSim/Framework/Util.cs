@@ -56,6 +56,7 @@ using OpenMetaverse.StructuredData;
 using Amib.Threading;
 using System.Collections.Concurrent;
 using System.Net.Http;
+using System.Security.Cryptography.X509Certificates;
 
 namespace OpenSim.Framework
 {
@@ -1098,14 +1099,18 @@ namespace OpenSim.Framework
         /// Is the platform Windows?
         /// </summary>
         /// <returns>true if so, false otherwise</returns>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static bool IsWindows()
         {
+            return RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+            /*
             PlatformID platformId = Environment.OSVersion.Platform;
 
             return (platformId == PlatformID.Win32NT
                 || platformId == PlatformID.Win32S
                 || platformId == PlatformID.Win32Windows
                 || platformId == PlatformID.WinCE);
+            */
         }
 
         public static bool LoadArchSpecificWindowsDll(string libraryName)
@@ -1478,6 +1483,129 @@ namespace OpenSim.Framework
             using StreamReader streamReader = new(cryptoStream);
           
             return streamReader.ReadToEnd();
+        }
+
+        private static readonly string pathSSLRsaPriv = Path.Combine("SSL","src");
+        private static readonly string pathSSLcerts = Path.Combine("SSL","ssl");
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void CreateOrUpdateSelfsignedCert(string certFileName, string certHostName, string certHostIp, string certPassword)
+        {
+            CreateOrUpdateSelfsignedCertificate(certFileName, certHostName, certHostIp, certPassword);
+        }
+
+        /// <summary>
+        /// Create or renew an SSL selfsigned certificate using the parameters set in the startup section of OpenSim.ini
+        /// </summary>
+        /// <param name="certFileName">The certificate file name.</param>
+        /// <param name="certHostName">The certificate host DNS name (CN).</param>
+        /// <param name="certHostIp">The certificate host IP address.</param>
+        /// <param name="certPassword">The certificate password.</param>
+        private static void CreateOrUpdateSelfsignedCertificate(string certFileName, string certHostName, string certHostIp, string certPassword)
+        {
+            SubjectAlternativeNameBuilder san = new();
+            san.AddDnsName(certHostName);
+            san.AddIpAddress(IPAddress.Parse(certHostIp));
+
+            // What OpenSim check (CN).
+            X500DistinguishedName dn = new($"CN={certHostName}");
+
+            using (RSA rsa = RSA.Create(2048))
+            {
+                CertificateRequest request = new(dn, rsa, HashAlgorithmName.SHA256,RSASignaturePadding.Pkcs1);
+
+                // (Optional)...
+                request.CertificateExtensions.Add(
+                    new X509KeyUsageExtension(X509KeyUsageFlags.DataEncipherment | X509KeyUsageFlags.KeyEncipherment | X509KeyUsageFlags.DigitalSignature , false));
+
+                // (Optional) SSL Server Authentication...
+                request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid("1.3.6.1.5.5.7.3.1")], false));
+
+                request.CertificateExtensions.Add(san.Build());
+
+                X509Certificate2 certificate = request.CreateSelfSigned(new DateTimeOffset(DateTime.UtcNow), new DateTimeOffset(DateTime.UtcNow.AddDays(3650)));
+
+                string privateKey = Convert.ToBase64String(rsa.ExportRSAPrivateKey(), Base64FormattingOptions.InsertLineBreaks);
+
+                // Create the SSL folder and sub folders if not exists.
+                if (!Directory.Exists(pathSSLRsaPriv))
+                    Directory.CreateDirectory(pathSSLRsaPriv);
+                if (!Directory.Exists(pathSSLcerts))
+                    Directory.CreateDirectory(pathSSLcerts);
+
+                // Store the RSA key in SSL\src\
+                File.WriteAllText(Path.Combine(pathSSLRsaPriv, certFileName) + ".txt", privateKey);
+                // Export and store the .pfx and .p12 certificates in SSL\ssl\.
+                // Note: Pfx is a Pkcs12 certificate and both files work for OpenSim.
+                string sslFileNames = Path.Combine(pathSSLcerts, certFileName);
+                byte[] pfxCertBytes = string.IsNullOrEmpty(certPassword) 
+                                    ? certificate.Export(X509ContentType.Pfx) 
+                                    : certificate.Export(X509ContentType.Pfx, certPassword);
+                File.WriteAllBytes(sslFileNames + ".pfx", pfxCertBytes);
+
+                byte[] p12CertBytes = string.IsNullOrEmpty(certPassword) 
+                                    ? certificate.Export(X509ContentType.Pkcs12) 
+                                    : certificate.Export(X509ContentType.Pkcs12, certPassword);
+                File.WriteAllBytes(sslFileNames + ".p12", p12CertBytes);
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void ConvertPemToPKCS12(string certFileName, string fullChainPath, string privateKeyPath)
+        {
+            ConvertPemToPKCS12Certificate(certFileName, fullChainPath, privateKeyPath, null);
+        }
+        
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void ConvertPemToPKCS12(string certFileName, string fullChainPath, string privateKeyPath, string outputPassword)
+        {
+            ConvertPemToPKCS12Certificate(certFileName, fullChainPath, privateKeyPath, outputPassword);
+        }
+
+        /// <summary>
+        /// Convert or renew .pem certificate to PKCS12 .pfx and .p12 usable by OpenSim.
+        /// the parameters are set in the startup section of OpenSim.ini
+        /// </summary>
+        /// <param name="certFileName">The output certificate file name.</param>
+        /// <param name="certPath">The path of fullchain.pem. If your CA don't provide 
+        /// the fullchain file, you can set the cert.pem instead.</param>
+        /// <param name="keyPath">The path of the private key (privkey.pem).</param>
+        /// <param name="outputPassword">The output certificates password.</param>
+        private static void ConvertPemToPKCS12Certificate(string certFileName, string certPath, string keyPath, string outputPassword)
+        {
+            if(string.IsNullOrEmpty(certPath) || string.IsNullOrEmpty(keyPath)){
+                m_log.Error($"[UTIL PemToPKCS12]: Missing fullchain.pem or privkey.pem path!.");
+                return;
+            }
+
+            // Convert .pem (like Let's Encrypt files) to X509Certificate2 certificate.
+            X509Certificate2 certificate;
+            try
+            {
+                certificate = X509Certificate2.CreateFromPemFile(certPath, keyPath);
+            }
+            catch(CryptographicException e)
+            {
+                m_log.Error($"[UTIL PemToPKCS12]: {e.Message}" );
+                return;
+            }
+
+            // Create the SSL folder and ssl sub folder if not exists.
+            if (!Directory.Exists(pathSSLcerts))
+                Directory.CreateDirectory(pathSSLcerts);
+
+            string sslFileNames = System.IO.Path.Combine(pathSSLcerts, certFileName);
+            // Export and store the .pfx and .p12 certificates in SSL\ssl\.
+            byte[] pfxCertBytes = string.IsNullOrEmpty(outputPassword)
+                                ? certificate.Export(X509ContentType.Pfx)
+                                : certificate.Export(X509ContentType.Pfx, outputPassword);
+            File.WriteAllBytes(sslFileNames + ".pfx", pfxCertBytes);
+
+            byte[] p12CertBytes = string.IsNullOrEmpty(outputPassword) 
+                                ? certificate.Export(X509ContentType.Pkcs12) 
+                                : certificate.Export(X509ContentType.Pkcs12, outputPassword);
+            File.WriteAllBytes(sslFileNames + ".p12", p12CertBytes);
+            
         }
 
         public static int fast_distance2d(int x, int y)
@@ -3032,6 +3160,70 @@ namespace OpenSim.Framework
 
             start = end = 0;
             return false;
+        }
+
+        [DllImport("winmm.dll")]
+        private static extern uint timeBeginPeriod(uint period);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void TimeBeginPeriod(uint period)
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                timeBeginPeriod(period);
+        }
+
+        [DllImport("winmm.dll")]
+        private static extern uint timeEndPeriod(uint period);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void TimeEndPeriod(uint period)
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                timeEndPeriod(period);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static void ThreadSleep(int period)
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                timeBeginPeriod(1);
+                Thread.Sleep(period);
+                timeEndPeriod(1);
+            }
+            else
+                Thread.Sleep(period);
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool SetProcessInformation(IntPtr hProcess, int ProcessInformationClass,
+                    IntPtr ProcessInformation, UInt32 ProcessInformationSize);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct PROCESS_POWER_THROTTLING_STATE
+        {
+            public uint Version;
+            public uint ControlMask;
+            public uint StateMask;
+        }
+
+        public static void DisableTimerThrottling()
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                int sz = Marshal.SizeOf(typeof(PROCESS_POWER_THROTTLING_STATE));
+                PROCESS_POWER_THROTTLING_STATE PwrInfo = new()
+                {
+                    Version = 1,
+                    ControlMask = 4,
+                    StateMask = 0
+                };  // disable that flag explicitly
+                nint PwrInfoPtr = Marshal.AllocHGlobal(sz);
+                Marshal.StructureToPtr(PwrInfo, PwrInfoPtr, false);
+                IntPtr handle = Process.GetCurrentProcess().Handle;
+                bool r = SetProcessInformation(handle, 4, PwrInfoPtr, (uint)sz);
+                Marshal.FreeHGlobal(PwrInfoPtr);
+            }
         }
 
         /// <summary>

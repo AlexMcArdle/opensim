@@ -4106,33 +4106,29 @@ namespace OpenSim.Region.ScriptEngine.Shared.Api
         }
 
         /// <summary>
-        /// Sets terrain estate texture
+        /// Sets terrain texture
         /// </summary>
         /// <param name="level"></param>
         /// <param name="texture"></param>
         /// <returns></returns>
         public void osSetTerrainTexture(int level, LSL_Key texture)
         {
+            if (level < 0 || level > 3)
+                return;
+            if (!UUID.TryParse(texture, out UUID textureID))
+                return;
+
             CheckThreatLevel(ThreatLevel.High, "osSetTerrainTexture");
 
-            //Check to make sure that the script's owner is the estate manager/master
-            //World.Permissions.GenericEstatePermission(
             if (World.Permissions.IsGod(m_host.OwnerID))
             {
-                if (level < 0 || level > 3)
-                    return;
-
-                if (!UUID.TryParse(texture, out UUID textureID))
-                    return;
-
-                // estate module is required
                 IEstateModule estate = World.RequestModuleInterface<IEstateModule>();
                 estate?.setEstateTerrainBaseTexture(level, textureID);
             }
         }
 
         /// <summary>
-        /// Sets terrain heights of estate
+        /// Sets terrain textures heights
         /// </summary>
         /// <param name="corner"></param>
         /// <param name="low"></param>
@@ -4140,16 +4136,13 @@ namespace OpenSim.Region.ScriptEngine.Shared.Api
         /// <returns></returns>
         public void osSetTerrainTextureHeight(int corner, double low, double high)
         {
+            if (corner < 0 || corner > 3)
+                return;
+
             CheckThreatLevel(ThreatLevel.High, "osSetTerrainTextureHeight");
 
-            //Check to make sure that the script's owner is the estate manager/master
-            //World.Permissions.GenericEstatePermission(
             if (World.Permissions.IsGod(m_host.OwnerID))
             {
-                if (corner < 0 || corner > 3)
-                    return;
-
-                // estate module is required
                 IEstateModule estate = World.RequestModuleInterface<IEstateModule>();
                 estate?.setEstateTerrainTextureHeights(corner, (float)low, (float)high);
             }
@@ -5559,6 +5552,28 @@ namespace OpenSim.Region.ScriptEngine.Shared.Api
             }
 
             return LSL_String.NullKey;
+        }
+
+        public LSL_List osGetLinkInventoryKeys(LSL_Integer linkNumber, LSL_Integer type)
+        {
+            LSL_List ret = new();
+            
+            SceneObjectPart part = GetSingleLinkPart(linkNumber);
+            if(part == null)
+                return ret;
+
+            part.TaskInventory.LockItemsForRead(true);
+            foreach (KeyValuePair<UUID, TaskInventoryItem> inv in part.TaskInventory)
+            {
+                if (inv.Value.Type == type || type == -1 &&
+                                    (inv.Value.CurrentPermissions
+                                    & (uint)(PermissionMask.Copy | PermissionMask.Transfer | PermissionMask.Modify))
+                                    == (uint)(PermissionMask.Copy | PermissionMask.Transfer | PermissionMask.Modify))
+                    ret.Add(inv.Value.AssetID.ToString());
+            }
+
+            part.TaskInventory.LockItemsForRead(false);
+            return ret;
         }
 
         public LSL_Key osGetLinkInventoryItemKey(LSL_Integer linkNumber, LSL_String name)

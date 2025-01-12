@@ -506,7 +506,7 @@ namespace OpenSim.Region.CoreModules.World.Estate
             }
 
             if (map.TryGetValue("prim_bonus", out tmp) && tmp is not null)
-                es.ObjectBonus = tmp.AsInteger();
+                es.ObjectBonus = tmp.AsReal();
 
             if (map.TryGetValue("sim_access", out tmp) && tmp is not null)
             {
@@ -541,7 +541,7 @@ namespace OpenSim.Region.CoreModules.World.Estate
             if (texture.IsZero())
                 return;
 
-            if((remoteClient.ViewerFlags & ViewerFlags.TPBR) != 0)
+            if(remoteClient is not null && (remoteClient.ViewerFlags & ViewerFlags.TPBR) != 0)
             {
                 switch (level)
                 {
