@@ -8,7 +8,7 @@ ARG COPY_MODULES=true \
     START_REGIONS=true
 
 # opensim-modules Stage
-FROM ghcr.io/McArdle-Systems/opensim-modules AS opensim-modules
+FROM ghcr.io/mcardle-systems/opensim-modules AS opensim-modules
 
 # opensim-source Stage
 # Use a base image with PowerShell
