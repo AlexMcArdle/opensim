@@ -8,7 +8,7 @@ ARG COPY_MODULES=true \
     START_REGIONS=true
 
 # opensim-modules Stage
-FROM ghcr.io/alexmcardle/opensim-modules AS opensim-modules
+FROM ghcr.io/McArdle-Systems/opensim-modules AS opensim-modules
 
 # opensim-source Stage
 # Use a base image with PowerShell
@@ -27,12 +27,6 @@ RUN mkdir -p $SOURCE_DIR $MODULES_DIR
 COPY . $SOURCE_DIR
 
 COPY --from=opensim-modules /opensim-modules $MODULES_DIR
-
-# Clone the repositories
-# RUN --mount=type=secret,id=git \
-#     . /run/secrets/git && \
-#     apk add --no-cache git && \
-#     git clone https://$GIT_USERNAME:$GIT_TOKEN@github.com/AlexMcArdle/opensim-modules.git $MODULES_DIR
 
 # Set the working directory
 WORKDIR $SOURCE_DIR
